@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
     Send,
     Users,
@@ -8,24 +8,133 @@ import {
     Clock,
     CheckCircle2,
     AlertCircle,
-    FileText,
-    Settings,
-    Database
+    Database,
+    Sparkles,
+    Smartphone
 } from "lucide-react";
 import { motion } from "framer-motion";
+import { createClient } from "@supabase/supabase-js";
+
+// Initialize Supabase Client
+const supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL || "",
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ""
+);
 
 export default function Dashboard() {
     const [message, setMessage] = useState("");
     const [numbers, setNumbers] = useState("");
     const [isSending, setIsSending] = useState(false);
+    const [isGenerating, setIsGenerating] = useState(false);
+    const [topic, setTopic] = useState("");
+    const [showAiModal, setShowAiModal] = useState(false);
+    const [stats, setStats] = useState({
+        total: 0,
+        sent: 0,
+        pending: 0,
+        success_rate: "0%"
+    });
 
-    const handleSend = () => {
+    // Fetch real stats on mount
+    useEffect(() => {
+        fetchStats();
+        const interval = setInterval(fetchStats, 30000); // Update every 30s
+        return () => clearInterval(interval);
+    }, []);
+
+    const fetchStats = async () => {
+        if (!process.env.NEXT_PUBLIC_SUPABASE_URL) return;
+
+        try {
+            const { count: pendingCount } = await supabase
+                .from('contatos_pending') // Adjust table name if needed
+                .select('*', { count: 'exact', head: true })
+                .eq('status', 'pending');
+
+            const { count: sentCount } = await supabase
+                .from('contatos_pending')
+                .select('*', { count: 'exact', head: true })
+                .eq('status', 'sent');
+
+            const total = (pendingCount || 0) + (sentCount || 0);
+            const rate = total > 0 && sentCount ? ((sentCount / total) * 100).toFixed(1) + "%" : "0%";
+
+            setStats({
+                total: total,
+                sent: sentCount || 0,
+                pending: pendingCount || 0,
+                success_rate: rate
+            });
+        } catch (e) {
+            console.error("Error fetching stats:", e);
+        }
+    };
+
+    const handleGenerateAI = async () => {
+        if (!topic) return;
+        setIsGenerating(true);
+        try {
+            const res = await fetch("/api/ai", {
+                method: "POST",
+                body: JSON.stringify({ prompt: topic }),
+                headers: { "Content-Type": "application/json" }
+            });
+            const data = await res.json();
+            if (data.message) {
+                setMessage(data.message);
+                setShowAiModal(false);
+            }
+        } catch (error) {
+            alert("Erro ao gerar mensagem. Verifique a API Key do Groq.");
+        } finally {
+            setIsGenerating(false);
+        }
+    };
+
+    const handleSend = async () => {
         setIsSending(true);
-        // Simulation of sending process
-        setTimeout(() => {
+
+        try {
+            // Parse numbers
+            const numberList = numbers.split('\n')
+                .map(n => n.replace(/\D/g, ''))
+                .filter(n => n.length >= 10);
+
+            if (numberList.length === 0) {
+                alert("Nenhum número válido encontrado.");
+                setIsSending(false);
+                return;
+            }
+
+            // Save to Supabase
+            if (process.env.NEXT_PUBLIC_SUPABASE_URL) {
+                const rows = numberList.map(num => ({
+                    telefone: num,
+                    message_template: message,
+                    status: 'pending',
+                    created_at: new Date().toISOString()
+                }));
+
+                const { error } = await supabase
+                    .from('contatos_pending')
+                    .insert(rows);
+
+                if (error) throw error;
+
+                alert(`Sucesso! ${rows.length} contatos adicionados à fila de envio.`);
+                setNumbers("");
+                fetchStats();
+            } else {
+                // Demo mode if no Supabase
+                alert("[MODO DEMONSTRAÇÃO] Configure o Supabase no EasyPanel para salvar de verdade.");
+            }
+
+        } catch (error) {
+            console.error(error);
+            alert("Erro ao salvar contatos.");
+        } finally {
             setIsSending(false);
-            alert("Campanha iniciada! As mensagens foram enfileiradas.");
-        }, 1500);
+        }
     };
 
     return (
@@ -61,10 +170,10 @@ export default function Dashboard() {
                 {/* Stats Grid */}
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-10">
                     {[
-                        { label: "Total Contatos", value: "37,402", icon: Users, color: "text-blue-400", bg: "bg-blue-400/10" },
-                        { label: "Mensagens Enviadas", value: "12,850", icon: MessageSquare, color: "text-[#25d366]", bg: "bg-[#25d366]/10" },
-                        { label: "Na Fila", value: "24,552", icon: Clock, color: "text-amber-400", bg: "bg-amber-400/10" },
-                        { label: "Taxa de Sucesso", value: "98.2%", icon: CheckCircle2, color: "text-purple-400", bg: "bg-purple-400/10" },
+                        { label: "Total Contatos", value: stats.total.toLocaleString(), icon: Users, color: "text-blue-400", bg: "bg-blue-400/10" },
+                        { label: "Enviados", value: stats.sent.toLocaleString(), icon: CheckCircle2, color: "text-[#25d366]", bg: "bg-[#25d366]/10" },
+                        { label: "Fila Pendente", value: stats.pending.toLocaleString(), icon: Clock, color: "text-amber-400", bg: "bg-amber-400/10" },
+                        { label: "Taxa de Entrega", value: stats.success_rate, icon: Smartphone, color: "text-purple-400", bg: "bg-purple-400/10" },
                     ].map((stat, i) => (
                         <motion.div
                             initial={{ opacity: 0, y: 20 }}
@@ -77,11 +186,6 @@ export default function Dashboard() {
                                 <div className={`p-2.5 rounded-lg ${stat.bg} ${stat.color} group-hover:scale-110 transition-transform`}>
                                     <stat.icon size={20} />
                                 </div>
-                                {i === 2 && (
-                                    <span className="text-xs font-semibold px-2 py-1 rounded bg-[#ffffff10] text-gray-300">
-                                        Drip Ativo
-                                    </span>
-                                )}
                             </div>
                             <div className="text-2xl font-bold mb-1">{stat.value}</div>
                             <div className="text-sm text-gray-400">{stat.label}</div>
@@ -97,13 +201,11 @@ export default function Dashboard() {
                             animate={{ opacity: 1, scale: 1 }}
                             className="glass rounded-2xl p-8 border-[#25d366]/20 bg-gradient-to-b from-[#ffffff05] to-transparent relative overflow-hidden"
                         >
-                            <div className="absolute top-0 right-0 p-4 opacity-5 pointer-events-none">
-                                <Send size={150} />
-                            </div>
-
-                            <div className="flex items-center gap-3 mb-8">
-                                <div className="w-1 h-8 bg-[#25d366] rounded-full"></div>
-                                <h2 className="text-xl font-bold">Nova Campanha</h2>
+                            <div className="flex items-center justify-between mb-8">
+                                <div className="flex items-center gap-3">
+                                    <div className="w-1 h-8 bg-[#25d366] rounded-full"></div>
+                                    <h2 className="text-xl font-bold">Nova Campanha</h2>
+                                </div>
                             </div>
 
                             <div className="space-y-6">
@@ -126,10 +228,43 @@ export default function Dashboard() {
                                 </div>
 
                                 <div>
-                                    <label className="block text-sm font-medium text-gray-300 mb-2 flex items-center gap-2">
-                                        <MessageSquare size={14} />
-                                        Mensagem
-                                    </label>
+                                    <div className="flex justify-between items-center mb-2">
+                                        <label className="text-sm font-medium text-gray-300 flex items-center gap-2">
+                                            <MessageSquare size={14} />
+                                            Mensagem
+                                        </label>
+                                        <button
+                                            onClick={() => setShowAiModal(!showAiModal)}
+                                            className="text-xs flex items-center gap-1 text-[#25d366] hover:text-[#1fa953] transition-colors"
+                                        >
+                                            <Sparkles size={12} />
+                                            Gerar com IA (Groq)
+                                        </button>
+                                    </div>
+
+                                    {showAiModal && (
+                                        <motion.div
+                                            initial={{ opacity: 0, height: 0 }}
+                                            animate={{ opacity: 1, height: 'auto' }}
+                                            className="mb-4 bg-[#ffffff05] p-4 rounded-xl border border-[#ffffff10]"
+                                        >
+                                            <input
+                                                type="text"
+                                                value={topic}
+                                                onChange={(e) => setTopic(e.target.value)}
+                                                placeholder="Ex: Oferta imperdível de Lançamento"
+                                                className="w-full bg-[#0a0a0c] border border-[#ffffff15] rounded-lg p-3 text-sm mb-2"
+                                            />
+                                            <button
+                                                onClick={handleGenerateAI}
+                                                disabled={isGenerating}
+                                                className="w-full bg-[#25d366]/20 hover:bg-[#25d366]/30 text-[#25d366] text-sm py-2 rounded-lg transition-colors"
+                                            >
+                                                {isGenerating ? "Criando mágica..." : "Gerar Texto Persuasivo"}
+                                            </button>
+                                        </motion.div>
+                                    )}
+
                                     <div className="relative">
                                         <textarea
                                             value={message}
@@ -137,25 +272,6 @@ export default function Dashboard() {
                                             placeholder="Olá! Temos uma novidade para você..."
                                             className="w-full h-40 bg-[#0a0a0c] border border-[#ffffff15] rounded-xl p-4 text-sm focus:outline-none focus:border-[#25d366] focus:ring-1 focus:ring-[#25d366] transition-all resize-none"
                                         />
-                                        <div className="absolute bottom-3 right-3 flex gap-2">
-                                            <button className="text-xs bg-[#ffffff10] hover:bg-[#ffffff20] px-2 py-1 rounded text-gray-400 transition-colors">
-                                                + Variável Nome
-                                            </button>
-                                            <button className="text-xs bg-[#ffffff10] hover:bg-[#ffffff20] px-2 py-1 rounded text-gray-400 transition-colors">
-                                                + Saudação Aleatória
-                                            </button>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div className="p-4 rounded-xl border border-[#ffffff10] bg-[#ffffff03]">
-                                        <div className="text-xs text-gray-500 mb-1">Intervalo (Min - Máx)</div>
-                                        <div className="font-mono text-sm">60s - 180s <span className="text-[#25d366] ml-1">(Safe Mode)</span></div>
-                                    </div>
-                                    <div className="p-4 rounded-xl border border-[#ffffff10] bg-[#ffffff03]">
-                                        <div className="text-xs text-gray-500 mb-1">Atraso de Digitação</div>
-                                        <div className="font-mono text-sm">Ativado (5s)</div>
                                     </div>
                                 </div>
 
@@ -164,17 +280,7 @@ export default function Dashboard() {
                                     disabled={isSending || !message || !numbers}
                                     className="w-full h-12 bg-[#25d366] hover:bg-[#1fa953] active:scale-[0.99] text-black font-bold rounded-xl transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed group"
                                 >
-                                    {isSending ? (
-                                        <>
-                                            <div className="h-5 w-5 border-2 border-black/30 border-t-black rounded-full animate-spin"></div>
-                                            Processando...
-                                        </>
-                                    ) : (
-                                        <>
-                                            <Send size={18} className="group-hover:translate-x-1 transition-transform" />
-                                            Iniciar Campanha
-                                        </>
-                                    )}
+                                    {isSending ? "Salvando..." : "Adicionar à Fila de Disparo"}
                                 </button>
                             </div>
                         </motion.div>
@@ -184,38 +290,21 @@ export default function Dashboard() {
                     <div className="space-y-6">
                         <div className="glass rounded-xl p-6">
                             <h3 className="font-semibold mb-4 flex items-center gap-2">
-                                <AlertCircle size={16} className="text-amber-400" />
-                                Dicas de Segurança
-                            </h3>
-                            <ul className="space-y-3 text-sm text-gray-400">
-                                <li className="flex gap-2">
-                                    <div className="w-1.5 h-1.5 rounded-full bg-amber-400 mt-1.5 shrink-0"></div>
-                                    Mantenha o intervalo acima de 60 segundos para evitar banimentos.
-                                </li>
-                                <li className="flex gap-2">
-                                    <div className="w-1.5 h-1.5 rounded-full bg-amber-400 mt-1.5 shrink-0"></div>
-                                    Use variações de mensagem (Spintax) sempre que possível.
-                                </li>
-                                <li className="flex gap-2">
-                                    <div className="w-1.5 h-1.5 rounded-full bg-amber-400 mt-1.5 shrink-0"></div>
-                                    Aqueça chips novos antes de enviar campanhas grandes.
-                                </li>
-                            </ul>
-                        </div>
-
-                        <div className="glass rounded-xl p-6">
-                            <h3 className="font-semibold mb-4 flex items-center gap-2">
                                 <Database size={16} className="text-blue-400" />
-                                Conexão Supabase
+                                Status da Conexão
                             </h3>
                             <div className="space-y-3">
-                                <div className="flex items-center justify-between text-sm p-3 bg-green-500/10 border border-green-500/20 rounded-lg">
-                                    <span className="text-green-400">Conectado</span>
-                                    <div className="h-2 w-2 bg-green-500 rounded-full animate-pulse"></div>
-                                </div>
-                                <div className="text-xs text-gray-500">
-                                    Sincronizado com tabela <code>contatos_pending</code>
-                                </div>
+                                {process.env.NEXT_PUBLIC_SUPABASE_URL ? (
+                                    <div className="flex items-center justify-between text-sm p-3 bg-green-500/10 border border-green-500/20 rounded-lg">
+                                        <span className="text-green-400">Supabase Ativo</span>
+                                        <div className="h-2 w-2 bg-green-500 rounded-full animate-pulse"></div>
+                                    </div>
+                                ) : (
+                                    <div className="flex items-center justify-between text-sm p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
+                                        <span className="text-red-400">Configure as Variáveis!</span>
+                                        <div className="h-2 w-2 bg-red-500 rounded-full"></div>
+                                    </div>
+                                )}
                             </div>
                         </div>
                     </div>
